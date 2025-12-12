@@ -1,89 +1,125 @@
-import argparse
-from pathlib import Path
-
-import matplotlib.pyplot as plt
-import numpy as np
 import rasterio
-from matplotlib.colors import LightSource
-from rasterio.enums import Resampling
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.colors import LightSource, LinearSegmentedColormap
+import os
 
-
-def visualizar_dem_con_hillshade(ruta_tiff, ruta_salida=None, max_pixels=8_000_000):
-    """Genera y guarda un hillshade suavizando memoria en archivos grandes."""
-    ruta = Path(ruta_tiff)
-    if not ruta.exists():
-        print("❌ La ruta especificada no existe.")
+def visualizar_dem(ruta_archivo, factor_escala_max=2000):
+    """
+    Visualiza un DEM con efecto hillshade y manejo de nodata.
+    
+    Args:
+        ruta_archivo (str): Ruta al archivo .tif
+        factor_escala_max (int): Ancho máximo en píxeles para visualización.
+                                 Ayuda a no colapsar la memoria con archivos grandes.
+    """
+    
+    if not os.path.exists(ruta_archivo):
+        print(f"Error: El archivo {ruta_archivo} no existe.")
         return
 
-    with rasterio.open(ruta) as src:
-        epsg = src.crs.to_epsg() if src.crs else None
-        if epsg != 9377:
-            print("⚠️ El archivo no está en proyección CTM12 (EPSG:9377); se continuará de todos modos.")
+    try:
+        with rasterio.open(ruta_archivo) as src:
+            print(f"Abriendo: {src.name}")
+            print(f"Tamaño original: {src.width} x {src.height}")
+            print(f"Sistema de Coordenadas detectado: {src.crs} (Asumido CTM12 por usuario)")
 
-        height, width = src.height, src.width
-        scale = 1.0
-        if height * width > max_pixels:
-            scale = (max_pixels / (height * width)) ** 0.5
-        out_shape = (max(1, int(height * scale)), max(1, int(width * scale)))
+            # --- MANEJO DE MEMORIA ---
+            # Si el raster es muy grande, calculamos un factor de reducción
+            # para leer solo una vista general (overview) y no explotar la RAM.
+            scale = 1
+            if src.width > factor_escala_max or src.height > factor_escala_max:
+                scale = max(src.width, src.height) // factor_escala_max
+                print(f"El archivo es grande. Aplicando reducción de escala: 1/{scale}")
 
-        elevacion = src.read(
-            1,
-            out_shape=out_shape,
-            resampling=Resampling.average,
-        ).astype(np.float32)
-        mask = src.read_masks(1, out_shape=out_shape)
-        if src.nodata is not None:
-            elevacion = np.where(elevacion == src.nodata, np.nan, elevacion)
-        elevacion = np.where(mask == 0, np.nan, elevacion)
+            # Leemos los datos redimensionados
+            # out_shape define el nuevo tamaño de la matriz
+            new_height = src.height // scale
+            new_width = src.width // scale
+            
+            # Leemos la banda 1
+            elevacion = src.read(
+                1,
+                out_shape=(new_height, new_width),
+                resampling=rasterio.enums.Resampling.bilinear
+            )
+            
+            # Leemos los límites (bounds) para pintar los ejes con coordenadas reales (CTM12)
+            bounds = src.bounds
+            extent = [bounds.left, bounds.right, bounds.bottom, bounds.top]
 
-        if not np.isfinite(elevacion).any():
-            print("❌ No hay valores válidos en el raster (todo es NoData).")
-            return
+            # Obtenemos el valor nodata del archivo, si no tiene, usamos -9999 por defecto
+            nodata_val = src.nodata if src.nodata is not None else -9999.0
 
-        ls = LightSource(azdeg=315, altdeg=45)
-        shaded = ls.shade(elevacion, cmap=plt.cm.terrain, blend_mode="overlay")
+    except Exception as e:
+        print(f"Error leyendo el archivo: {e}")
+        return
 
-        fig, ax = plt.subplots(figsize=(10, 8))
-        im = ax.imshow(
-            shaded,
-            extent=(src.bounds.left, src.bounds.right, src.bounds.bottom, src.bounds.top),
-            origin="upper",
-        )
-        ax.set_title("Modelo de Elevación con Hillshade", fontsize=14)
-        ax.set_xticks([])
-        ax.set_yticks([])
-        for spine in ax.spines.values():
-            spine.set_visible(False)
+    # --- PROCESAMIENTO DE DATOS ---
+    
+    # Crear una máscara para los valores NoData (-9999)
+    # Usamos np.nan para que matplotlib los ignore o los pinte transparente
+    elevacion_masked = np.ma.masked_equal(elevacion, nodata_val)
+    
+    # Manejo de valores extremos si hay ruido (opcional, limpia la visualización)
+    # A veces hay puntos -9999 que no están marcados como nodata
+    elevacion_masked = np.ma.masked_less(elevacion_masked, -500) # Asumiendo que no hay nada debajo de -500m en tu zona
 
-        plt.tight_layout()
+    # --- CONFIGURACIÓN DE ESTILO (Colores tipo 'Topobatimétria') ---
+    
+    # Definimos un colormap personalizado similar al de tus imágenes
+    # Secuencia: Azul Oscuro -> Azul Claro -> Verde/Amarillo -> Marrón -> Blanco
+    colors = [
+        (0.0, "#1f0c48"),  # Fondo profundo (Morado oscuro/Azul)
+        (0.2, "#1fa4b6"),  # Agua panda / zonas bajas (Turquesa)
+        (0.4, "#e5ff00"),  # Zonas medias bajas (Amarillo)
+        (0.6, "#f4e6c7"),  # Tierra (Beige)
+        (0.8, "#8c6d31"),  # Montaña (Marrón)
+        (1.0, "#ffffff")   # Picos (Blanco)
+    ]
+    cmap_custom = LinearSegmentedColormap.from_list("custom_terrain", colors)
 
-        salida = Path(ruta_salida) if ruta_salida else ruta.with_name(f"{ruta.stem}_hillshade.png")
-        plt.savefig(salida, dpi=200, bbox_inches="tight")
-        print(f"✅ Imagen guardada en: {salida}")
-        plt.show()
-        plt.close(fig)
+    # --- CÁLCULO DE HILLSHADE (Efecto de relieve) ---
+    print("Calculando Hillshade...")
+    ls = LightSource(azdeg=315, altdeg=45) # Luz desde el Noroeste a 45 grados
 
+    # rgb_shaded combina el color (basado en elevación) con la sombra (basado en pendiente)
+    # vert_exag: Exageración vertical. Auméntalo (ej. 5 o 10) si el terreno se ve muy plano.
+    rgb = ls.shade(elevacion_masked, cmap=cmap_custom, blend_mode='overlay', vert_exag=10, dx=scale, dy=scale)
 
-def _parse_args():
-    parser = argparse.ArgumentParser(description="Genera hillshade desde un DEM en formato TIFF.")
-    parser.add_argument("ruta", nargs="?", help="Ruta del archivo TIFF")
-    parser.add_argument(
-        "--salida",
-        help="Ruta de salida de la imagen (png). Por defecto crea *_hillshade.png junto al TIFF.",
-    )
-    parser.add_argument(
-        "--max-pixels",
-        type=int,
-        default=8_000_000,
-        help="Número máximo de píxeles para reducir resolución y evitar problemas de memoria.",
-    )
-    return parser.parse_args()
+    # --- GRAFICACIÓN ---
+    fig, ax = plt.subplots(figsize=(10, 10))
+    
+    # Mostramos la imagen
+    im = ax.imshow(rgb, extent=extent, origin='upper')
+    
+    # Configuración de ejes (Coordenadas CTM12)
+    ax.set_title("Modelo de Elevación Digital (Topobatimetría)", fontsize=15)
+    ax.set_xlabel("Este (m) - CTM12")
+    ax.set_ylabel("Norte (m) - CTM12")
+    ax.grid(True, linestyle='--', alpha=0.3)
 
+    # --- BARRA DE COLOR (LEYENDA) ---
+    # Como usamos ls.shade, imshow devuelve una imagen RGB sin datos escalares.
+    # Necesitamos crear un "ScalarMappable" falso para pintar la barra de colores correcta.
+    min_elev = np.nanmin(elevacion_masked)
+    max_elev = np.nanmax(elevacion_masked)
+    
+    sm = plt.cm.ScalarMappable(cmap=cmap_custom, norm=plt.Normalize(vmin=min_elev, vmax=max_elev))
+    sm.set_array([]) # Array vacío ficticio
+    
+    cbar = plt.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label('Elevación (m)')
 
+    plt.tight_layout()
+    plt.show()
+
+# --- EJECUCIÓN ---
 if __name__ == "__main__":
-    args = _parse_args()
-    ruta_input = args.ruta or input("📂 Ingresa la ruta del archivo TIFF: ").strip()
-    if not ruta_input:
-        print("❌ No se ingresó una ruta válida.")
-    else:
-        visualizar_dem_con_hillshade(ruta_input, args.salida, args.max_pixels)
+    # Solicitamos la ruta al usuario
+    ruta = input("Por favor, ingresa la ruta completa de tu archivo .tif: ").strip()
+    
+    # Quitamos comillas si el usuario copió la ruta como "ruta"
+    ruta = ruta.replace('"', '').replace("'", "")
+    
+    visualizar_dem(ruta)
