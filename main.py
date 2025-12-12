@@ -31,7 +31,14 @@ def visualizar_dem_con_hillshade(ruta_tiff, ruta_salida=None, max_pixels=8_000_0
             out_shape=out_shape,
             resampling=Resampling.average,
         ).astype(np.float32)
-        elevacion = np.where(elevacion == src.nodata, np.nan, elevacion)
+        mask = src.read_masks(1, out_shape=out_shape)
+        if src.nodata is not None:
+            elevacion = np.where(elevacion == src.nodata, np.nan, elevacion)
+        elevacion = np.where(mask == 0, np.nan, elevacion)
+
+        if not np.isfinite(elevacion).any():
+            print("❌ No hay valores válidos en el raster (todo es NoData).")
+            return
 
         ls = LightSource(azdeg=315, altdeg=45)
         shaded = ls.shade(elevacion, cmap=plt.cm.terrain, blend_mode="overlay")
@@ -52,13 +59,14 @@ def visualizar_dem_con_hillshade(ruta_tiff, ruta_salida=None, max_pixels=8_000_0
 
         salida = Path(ruta_salida) if ruta_salida else ruta.with_name(f"{ruta.stem}_hillshade.png")
         plt.savefig(salida, dpi=200, bbox_inches="tight")
-        plt.close(fig)
         print(f"✅ Imagen guardada en: {salida}")
+        plt.show()
+        plt.close(fig)
 
 
 def _parse_args():
     parser = argparse.ArgumentParser(description="Genera hillshade desde un DEM en formato TIFF.")
-    parser.add_argument("ruta", help="Ruta del archivo TIFF")
+    parser.add_argument("ruta", nargs="?", help="Ruta del archivo TIFF")
     parser.add_argument(
         "--salida",
         help="Ruta de salida de la imagen (png). Por defecto crea *_hillshade.png junto al TIFF.",
@@ -74,4 +82,8 @@ def _parse_args():
 
 if __name__ == "__main__":
     args = _parse_args()
-    visualizar_dem_con_hillshade(args.ruta, args.salida, args.max_pixels)
+    ruta_input = args.ruta or input("📂 Ingresa la ruta del archivo TIFF: ").strip()
+    if not ruta_input:
+        print("❌ No se ingresó una ruta válida.")
+    else:
+        visualizar_dem_con_hillshade(ruta_input, args.salida, args.max_pixels)
