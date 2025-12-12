@@ -121,11 +121,13 @@ def visualizar_dem_con_satelite(ruta_archivo, factor_escala_max=2000):
     
     # Creamos el Mappable solo si hay rango válido de datos
     if not np.isnan(min_elev) and not np.isnan(max_elev):
+        min_lbl = round(float(min_elev), 1)
+        max_lbl = round(float(max_elev), 1)
         sm = plt.cm.ScalarMappable(cmap=cmap_terrain, norm=plt.Normalize(vmin=min_elev, vmax=max_elev))
         sm.set_array([])
         
         cbar = plt.colorbar(sm, ax=ax, fraction=0.035, pad=0.02, shrink=0.7)
-        cbar.set_label('Elevación (m)', fontsize=10)
+        cbar.set_label(f'Elevación (m) [{min_lbl}, {max_lbl}]', fontsize=10)
         cbar.outline.set_visible(False)
 
     # Guardar
