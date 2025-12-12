@@ -142,6 +142,8 @@ def visualizar_amenaza_continua(ruta_raster, ruta_shapefile, tipo_mapa, nombre_p
     cbar = plt.colorbar(im, ax=ax, fraction=0.035, pad=0.02, shrink=0.6)
     cbar.set_label(label_text, fontsize=10, weight='bold')
     cbar.outline.set_visible(False)
+    # Etiqueta explícita del máximo en la parte superior
+    cbar.ax.text(0.5, 1.02, f"Max: {max_val_real:.2f}", transform=cbar.ax.transAxes, ha='center', va='bottom', fontsize=9, weight='bold')
     
     # Añadir linea indicadora del máximo real si es menor que el tope de la escala
     if max_val_real < vmax_uso:
