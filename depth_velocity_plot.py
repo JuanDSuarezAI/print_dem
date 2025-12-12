@@ -50,7 +50,7 @@ def obtener_configuracion_peligro(tipo_mapa, data_max):
     
     return cmap, norm, bounds, label_bar, title
 
-def visualizar_amenaza(ruta_raster, ruta_shapefile, tipo_mapa):
+def visualizar_amenaza(ruta_raster, ruta_shapefile, tipo_mapa, nombre_salida=None):
     
     # 1. LEER RASTER
     if not os.path.exists(ruta_raster):
@@ -148,10 +148,14 @@ def visualizar_amenaza(ruta_raster, ruta_shapefile, tipo_mapa):
 
     # 6. GUARDAR
     sufijo = "velocidad" if tipo_mapa == 'v' else "profundidad"
-    nombre_salida = f"mapa_amenaza_{sufijo}_{Path(ruta_raster).stem}.png"
+    base_predeterminado = f"mapa_amenaza_{sufijo}_{Path(ruta_raster).stem}"
+    base_nombre = nombre_salida.strip().strip('"').strip("'") if nombre_salida else base_predeterminado
+    if not base_nombre.lower().endswith(".png"):
+        base_nombre = f"{base_nombre}.png"
+    nombre_salida_final = base_nombre
     
-    plt.savefig(nombre_salida, dpi=300, bbox_inches='tight', pad_inches=0.1)
-    print(f"¡Mapa guardado!: {nombre_salida}")
+    plt.savefig(nombre_salida_final, dpi=300, bbox_inches='tight', pad_inches=0.1)
+    print(f"¡Mapa guardado!: {nombre_salida_final}")
     plt.close(fig)
 
 if __name__ == "__main__":
@@ -165,4 +169,7 @@ if __name__ == "__main__":
         
     r_shp = input("Ruta del Shapefile de perímetro urbano (.shp): ").strip().strip('"').strip("'")
     
-    visualizar_amenaza(r_raster, r_shp, tipo)
+    nombre_out = input("Nombre del archivo de salida (sin extensión, opcional): ").strip()
+    nombre_out = nombre_out if nombre_out else None
+    
+    visualizar_amenaza(r_raster, r_shp, tipo, nombre_salida=nombre_out)
