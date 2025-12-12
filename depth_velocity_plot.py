@@ -11,7 +11,7 @@ import numpy as np
 import pyproj
 import rasterio
 
-# --- CONFIGURACIÓN PROJ ---
+# --- CONFIGURACIÓN PROJ (Corrección para Windows/Entornos Virtuales) ---
 try:
     os.environ["PROJ_LIB"] = pyproj.datadir.get_data_dir()
 except Exception:
@@ -19,38 +19,50 @@ except Exception:
 
 warnings.filterwarnings("ignore")
 
-def obtener_configuracion_peligro(tipo_mapa, data_max):
+def obtener_configuracion_continua(tipo_mapa, data_max):
     """
-    Define los colores y los intervalos (bins) fijos para peligrosidad.
-    Esto asegura que 1.5 m/s siempre se vea peligroso, sin importar el máximo del raster.
+    Define una paleta continua pero con lógica de seguridad.
+    Si el raster tiene valores bajos, forzamos que el 'Rojo' no aparezca.
+    Si tiene valores extremos, la escala se adapta.
     """
-    if tipo_mapa == 'v': # VELOCIDAD
-        # Rangos basados en estabilidad de vehículos y personas
-        # 0-0.5 (Bajo), 0.5-1.0 (Medio), 1.0-2.0 (Alto), >2.0 (Extremo)
-        bounds = [0, 0.5, 1.0, 2.0, max(5.0, data_max + 1)] 
-        
-        # Colores Hex: Verde suave, Amarillo, Naranja, Rojo Intenso
-        colors = ["#4cedb2", "#ffee00", "#ff9900", "#cc0000"]
-        label_bar = "Velocidad (m/s)"
-        title = "Mapa de Velocidad de Flujo"
-        
-    else: # PROFUNDIDAD
-        # Rangos: 0-0.3 (Tobillos), 0.3-0.8 (Rodilla/Cintura), 0.8-1.5 (Pecho), >1.5 (Te tapa)
-        bounds = [0, 0.3, 0.8, 1.5, max(5.0, data_max + 1)]
-        
-        # Colores: Celeste agua, Azul agua, Naranja alerta, Rojo peligro
-        colors = ["#a6cee3", "#1f78b4", "#fdbf6f", "#e31a1c"]
-        label_bar = "Profundidad (m)"
-        title = "Mapa de Profundidad de Inundación"
-
-    # Creamos el mapa de colores discreto (traffic light style)
-    cmap = mcolors.ListedColormap(colors)
-    # BoundaryNorm fuerza a que los colores cambien EXACTAMENTE en los bounds
-    norm = mcolors.BoundaryNorm(bounds, cmap.N)
     
-    return cmap, norm, bounds, label_bar, title
+    if tipo_mapa == 'v': # VELOCIDAD
+        # Referencia: A partir de 2.0 m/s es daño estructural (ROJO)
+        # Definimos un gradiente: Transparente -> Cian -> Verde -> Amarillo -> Rojo -> Violeta
+        colors = ["#e1f5fe", "#00e5ff", "#00c853", "#ffd600", "#d50000", "#4a148c"]
+        # Posiciones relativas del gradiente (0.0 a 1.0) para distribuir los colores
+        # Esto ayuda a que el amarillo/rojo resalten más
+        nodes = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+        
+        label_bar = "Velocidad de Flujo (m/s)"
+        title = "Mapa de Velocidad (Continuo)"
+        
+        # Lógica de seguridad:
+        # Si el raster tiene max=0.5 (muy lento), NO queremos que se vea rojo.
+        # Forzamos que la escala visual llegue al menos a 2.0 para mantener consistencia.
+        # Si el raster tiene max=6.0 (rápido), la escala llega a 6.0.
+        vmax_viz = max(data_max, 2.5) 
 
-def visualizar_amenaza(ruta_raster, ruta_shapefile, tipo_mapa, nombre_salida=None):
+    else: # PROFUNDIDAD
+        # Referencia: A partir de 1.5 m es riesgo alto de ahogamiento (ROJO)
+        # Gradiente: Azul Claro -> Azul Medio -> Amarillo -> Naranja -> Rojo
+        colors = ["#e0f7fa", "#29b6f6", "#fff176", "#ff9800", "#b71c1c"]
+        nodes = [0.0, 0.25, 0.5, 0.75, 1.0]
+        
+        label_bar = "Profundidad de Inundación (m)"
+        title = "Mapa de Profundidad (Continuo)"
+        
+        # Si la inundación es bajita (0.3m), se verá azul. 
+        # Si supera 1.5m, empezará a verse roja.
+        vmax_viz = max(data_max, 2.0)
+
+    # Creamos el mapa de colores continuo (LinearSegmented)
+    cmap_name = "AmenazaCustom"
+    cmap = mcolors.LinearSegmentedColormap.from_list(cmap_name, list(zip(nodes, colors)))
+    
+    return cmap, vmax_viz, label_bar, title
+
+def visualizar_amenaza_continua(ruta_raster, ruta_shapefile, tipo_mapa, nombre_personalizado=None):
     
     # 1. LEER RASTER
     if not os.path.exists(ruta_raster):
@@ -59,9 +71,9 @@ def visualizar_amenaza(ruta_raster, ruta_shapefile, tipo_mapa, nombre_salida=Non
 
     try:
         with rasterio.open(ruta_raster) as src:
-            print(f"Leyendo raster: {src.name}")
+            print(f"Procesando: {src.name}")
             
-            # Downsampling para memoria (opcional, ajusta 2000 según necesites)
+            # Downsampling inteligente para evitar colapsos de memoria
             factor_escala_max = 2000
             scale = 1
             if src.width > factor_escala_max or src.height > factor_escala_max:
@@ -70,7 +82,6 @@ def visualizar_amenaza(ruta_raster, ruta_shapefile, tipo_mapa, nombre_salida=Non
             new_h, new_w = src.height // scale, src.width // scale
             data = src.read(1, out_shape=(new_h, new_w), resampling=rasterio.enums.Resampling.bilinear)
             
-            # Coordenadas
             bounds = src.bounds
             extent = [bounds.left, bounds.right, bounds.bottom, bounds.top]
             crs_raster = src.crs
@@ -80,96 +91,94 @@ def visualizar_amenaza(ruta_raster, ruta_shapefile, tipo_mapa, nombre_salida=Non
         print(f"Error abriendo raster: {e}")
         return
 
-    # Enmascarar NoData y valores <= 0 (asumimos que 0 no es inundación para visualizar)
-    data_masked = np.ma.masked_less_equal(data, 0)
+    # Limpieza de datos (Mascara para NoData y valores <= 0)
+    data_masked = np.ma.masked_less_equal(data, 0.001) # Filtramos 0 estricto
     data_masked = np.ma.masked_equal(data_masked, nodata)
     
     if data_masked.mask.all():
-        print("El raster no tiene datos válidos (todo es <= 0 o nodata).")
+        print("El raster no tiene datos válidos en el área.")
         return
 
     max_val_real = np.nanmax(data_masked)
+    min_val_real = np.nanmin(data_masked)
     
-    # 2. CONFIGURAR COLORES (Lógica de peligrosidad)
-    cmap, norm, boundaries, label_text, titulo = obtener_configuracion_peligro(tipo_mapa, max_val_real)
+    # 2. CONFIGURAR COLORES (Escala Continua Inteligente)
+    cmap, vmax_uso, label_text, titulo_mapa = obtener_configuracion_continua(tipo_mapa, max_val_real)
 
-    # 3. LEER Y PROCESAR SHAPEFILE (Perímetro Urbano)
+    # 3. LEER SHAPEFILE (Perímetro Urbano)
     gdf = None
     if ruta_shapefile and os.path.exists(ruta_shapefile):
         try:
-            print("Cargando perímetro urbano...")
             gdf = gpd.read_file(ruta_shapefile)
-            
-            # CRÍTICO: El shapefile debe tener el mismo sistema de coordenadas que el raster
             if gdf.crs != crs_raster:
-                print(f"Reproyectando shapefile de {gdf.crs} a {crs_raster}...")
                 gdf = gdf.to_crs(crs_raster)
         except Exception as e:
             print(f"Advertencia: No se pudo cargar el Shapefile. {e}")
 
     # 4. GRAFICAR
-    print("Generando mapa...")
+    print("Generando imagen...")
     fig, ax = plt.subplots(figsize=(12, 12))
     
-    # A. Datos de inundación (Sin Hillshade, plano, colores categóricos)
-    im = ax.imshow(data_masked, cmap=cmap, norm=norm, extent=extent, origin='upper', zorder=5, alpha=0.9)
+    # A. Raster de Inundación
+    # Usamos vmin=0 y vmax=vmax_uso para anclar la escala de seguridad
+    im = ax.imshow(data_masked, cmap=cmap, vmin=0, vmax=vmax_uso, 
+                   extent=extent, origin='upper', zorder=5, alpha=0.9)
     
-    # B. Perímetro Urbano (Solo borde)
+    # B. Perímetro Urbano
     if gdf is not None:
-        # Plot del borde en negro o gris oscuro
-        gdf.boundary.plot(ax=ax, color='black', linewidth=1.5, zorder=15, linestyle='--')
+        gdf.boundary.plot(ax=ax, color='black', linewidth=1.2, zorder=15, linestyle='--')
 
-    # C. Mapa Base Satelital
+    # C. Mapa Base
     ax.set_xlim(extent[0], extent[1])
     ax.set_ylim(extent[2], extent[3])
     ax.set_axis_off()
     
     try:
-        # EPSG:9377 para CTM12 Colombia
         cx.add_basemap(ax, crs="EPSG:9377", source=cx.providers.Esri.WorldImagery, attribution=False, zoom='auto', zorder=1)
-    except:
-        print("No se pudo descargar el mapa base.")
+    except: pass
 
-    # 5. LEYENDA (Customizada para mostrar rangos)
-    # Truco: Usamos los boundaries para pintar la barra
-    cbar = plt.colorbar(im, ax=ax, fraction=0.035, pad=0.02, shrink=0.6, ticks=boundaries[:-1] + [max_val_real])
-    
-    # Ajustamos etiquetas para que el ultimo valor muestre el máximo real
-    labels_cbar = [str(b) for b in boundaries[:-1]]
-    labels_cbar.append(f">{boundaries[-2]} (Max: {max_val_real:.2f})")
-    
-    # Limpiamos las etiquetas intermedias si son muchas, pero aquí son pocas (4 o 5)
-    cbar.ax.set_yticklabels(labels_cbar) 
+    # 5. BARRA DE COLOR CONTINUA
+    # Mostramos una barra continua, no por bloques
+    cbar = plt.colorbar(im, ax=ax, fraction=0.035, pad=0.02, shrink=0.6)
     cbar.set_label(label_text, fontsize=10, weight='bold')
     cbar.outline.set_visible(False)
     
-    # Título
-    plt.title(f"{titulo}\n(Máximo registrado: {max_val_real:.2f})", fontsize=12)
+    # Añadir linea indicadora del máximo real si es menor que el tope de la escala
+    if max_val_real < vmax_uso:
+        cbar.ax.plot([0, 1], [max_val_real/vmax_uso, max_val_real/vmax_uso], 'w-', linewidth=2)
+        cbar.ax.text(1.1, max_val_real/vmax_uso, f'Max: {max_val_real:.2f}', 
+                     transform=cbar.ax.transAxes, color='black', fontsize=8, va='center')
 
     # 6. GUARDAR
-    sufijo = "velocidad" if tipo_mapa == 'v' else "profundidad"
-    base_predeterminado = f"mapa_amenaza_{sufijo}_{Path(ruta_raster).stem}"
-    base_nombre = nombre_salida.strip().strip('"').strip("'") if nombre_salida else base_predeterminado
-    if not base_nombre.lower().endswith(".png"):
-        base_nombre = f"{base_nombre}.png"
-    nombre_salida_final = base_nombre
+    if nombre_personalizado:
+        # Limpieza básica del nombre ingresado
+        nombre_clean = nombre_personalizado.strip().replace('.png', '')
+        nombre_salida = f"{nombre_clean}.png"
+    else:
+        # Nombre automático si no se define uno
+        sufijo = "velocidad" if tipo_mapa == 'v' else "profundidad"
+        nombre_salida = f"mapa_{sufijo}_{Path(ruta_raster).stem}.png"
     
-    plt.savefig(nombre_salida_final, dpi=300, bbox_inches='tight', pad_inches=0.1)
-    print(f"¡Mapa guardado!: {nombre_salida_final}")
+    try:
+        plt.savefig(nombre_salida, dpi=300, bbox_inches='tight', pad_inches=0.1)
+        print(f"¡Éxito! Guardado como: {nombre_salida}")
+    except Exception as e:
+        print(f"Error al guardar: {e}")
+        
     plt.close(fig)
 
 if __name__ == "__main__":
-    print("--- GENERADOR DE MAPAS DE AMENAZA (Profundidad/Velocidad) ---")
+    print("--- GENERADOR DE MAPAS CONTINUOS (Velocidad/Profundidad) ---")
     
-    r_raster = input("Ruta del archivo .tif: ").strip().strip('"').strip("'")
+    r_raster = input("Ruta del raster (.tif): ").strip().strip('"').strip("'")
     
-    tipo = input("¿Qué variable es? (Escribe 'v' para Velocidad, 'p' para Profundidad): ").lower().strip()
+    tipo = input("Tipo de mapa ('v' = Velocidad, 'p' = Profundidad): ").lower().strip()
     while tipo not in ['v', 'p']:
-        tipo = input("Opción no válida. Escribe 'v' o 'p': ").lower().strip()
+        tipo = input("Por favor ingresa 'v' o 'p': ").lower().strip()
         
-    r_shp = input("Ruta del Shapefile de perímetro urbano (.shp): ").strip().strip('"').strip("'")
+    r_shp = input("Ruta Shapefile Urbano (Opcional, enter para saltar): ").strip().strip('"').strip("'")
     
-    nombre_out = input("Nombre del archivo de salida (sin extensión, opcional): ").strip()
-    nombre_out = nombre_out if nombre_out else None
+    # NUEVO: Input para el nombre
+    nom_salida = input("Nombre para guardar la imagen (Ej: escenario_tr100): ").strip()
     
-    visualizar_amenaza(r_raster, r_shp, tipo, nombre_salida=nombre_out)
+    visualizar_amenaza_continua(r_raster, r_shp, tipo, nom_salida)
